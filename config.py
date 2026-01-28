@@ -135,6 +135,13 @@ BORING_WORDS = {
     "good", "bad", "nice", "cool", "great", "fine", "sure", "real",
 }
 
+# Group chat analysis thresholds
+MIN_MESSAGES_FOR_TOP_GROUP = 50
+TOP_GROUPS_COUNT = 15
+MIN_GROUP_MEMBERS = 3  # Skip groups with fewer than 3 members
+BURST_CONCENTRATION_THRESHOLD = 0.7  # 70%+ messages in one year = burst/event group
+CONSISTENT_MIN_YEARS = 3  # Must be active 3+ years to be "consistent"
+
 # Ensure output directories exist
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
