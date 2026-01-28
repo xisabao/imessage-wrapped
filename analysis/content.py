@@ -2,11 +2,20 @@
 import pandas as pd
 import numpy as np
 import re
+import sys
+from pathlib import Path
 from collections import Counter
 import emoji
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
 from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 from sklearn.decomposition import NMF
+
+# Add parent directory to path for imports when running as script
+# This allows the file to be run directly from the analysis/ directory
+parent_dir = Path(__file__).parent.parent
+if str(parent_dir) not in sys.path:
+    sys.path.insert(0, str(parent_dir))
+
 from config import BORING_PHRASES, BORING_WORDS
 
 sia = SentimentIntensityAnalyzer()
@@ -48,10 +57,13 @@ def get_emoji_by_contact(df, top_n=10):
     return top_per_contact
 
 def is_question(text):
-    """Check if text is a question."""
-    if not text:
+    """Check if text is a question (ASCII ? or fullwidth ？ U+FF1F)."""
+    if text is None or pd.isna(text):
         return False
-    return '?' in text
+    s = str(text).strip()
+    if not s:
+        return False
+    return '?' in s or '\uFF1F' in s  # fullwidth ？ common in CJK
 
 def get_question_ratio_by_year(df):
     """Get ratio of questions per year."""
@@ -63,7 +75,9 @@ def get_question_ratio_by_year(df):
         questions=('is_question', 'sum'),
     ).reset_index()
 
-    yearly['question_pct'] = yearly['questions'] / yearly['total'] * 100
+    total = pd.to_numeric(yearly['total'], errors='coerce').fillna(0).to_numpy(np.float64)
+    questions = pd.to_numeric(yearly['questions'], errors='coerce').fillna(0).to_numpy(np.float64)
+    yearly['question_pct'] = np.where(total > 0, questions / total * 100, 0.0)
 
     return yearly
 
@@ -78,21 +92,43 @@ def get_question_ratio_by_contact(df, min_messages=50):
     ).reset_index()
 
     by_contact = by_contact[by_contact['total'] >= min_messages]
-    by_contact['question_pct'] = by_contact['questions'] / by_contact['total'] * 100
+    total = pd.to_numeric(by_contact['total'], errors='coerce').fillna(0).to_numpy(np.float64)
+    questions = pd.to_numeric(by_contact['questions'], errors='coerce').fillna(0).to_numpy(np.float64)
+    by_contact['question_pct'] = np.where(total > 0, questions / total * 100, 0.0)
 
     return by_contact.sort_values('question_pct', ascending=False)
 
+def _safe_str_for_sentiment(text):
+    """Return str for VADER; empty string if missing or non-string-like."""
+    if text is None or pd.isna(text):
+        return ""
+    s = str(text).strip()
+    return s if s else ""
+
+
 def calculate_sentiment(text):
-    """Calculate VADER sentiment score."""
-    if not text:
+    """Calculate VADER sentiment score. Handles NaN, None, non-str."""
+    s = _safe_str_for_sentiment(text)
+    if not s:
         return {'compound': 0, 'pos': 0, 'neu': 0, 'neg': 0}
     try:
-        return sia.polarity_scores(text)
-    except:
+        return sia.polarity_scores(s)
+    except Exception:
         return {'compound': 0, 'pos': 0, 'neu': 0, 'neg': 0}
 
-def get_sentiment_by_contact(df, min_messages=50):
-    """Get average sentiment scores per contact."""
+def  get_sentiment_by_contact(df, min_messages=50, neutral_threshold=0.0001):
+    """Get average sentiment scores per contact.
+    
+    Analyzes sentiment for the entire conversation (both parties).
+    Filters out very neutral messages (|compound| < neutral_threshold) before averaging
+    to get clearer sentiment differences between contacts.
+    
+    Args:
+        df: DataFrame with messages
+        min_messages: Minimum total messages required per contact
+        neutral_threshold: Absolute compound score threshold below which messages
+                          are considered neutral and excluded (default: 0.0001)
+    """
     df = df.copy()
 
     sentiments = df['text'].apply(calculate_sentiment)
@@ -100,16 +136,22 @@ def get_sentiment_by_contact(df, min_messages=50):
     df['sentiment_pos'] = sentiments.apply(lambda x: x['pos'])
     df['sentiment_neg'] = sentiments.apply(lambda x: x['neg'])
 
-    by_contact = df.groupby('contact_name').agg(
+    # Filter out very neutral messages (those with compound score close to 0)
+    df_non_neutral = df[df['sentiment_compound'].abs() >= neutral_threshold].copy()
+
+    by_contact = df_non_neutral.groupby('contact_name').agg(
         total_messages=('message_id', 'count'),
         avg_sentiment=('sentiment_compound', 'mean'),
         avg_positive=('sentiment_pos', 'mean'),
         avg_negative=('sentiment_neg', 'mean'),
     ).reset_index()
 
-    by_contact = by_contact[by_contact['total_messages'] >= min_messages]
+    # Check total messages (including neutral) to ensure we have enough data
+    total_by_contact = df.groupby('contact_name').size().reset_index(name='total_all_messages')
+    by_contact = by_contact.merge(total_by_contact, on='contact_name', how='left')
+    by_contact = by_contact[by_contact['total_all_messages'] >= min_messages]
 
-    return by_contact.sort_values('avg_sentiment', ascending=False)
+    return by_contact.sort_values('total_messages', ascending=False)
 
 def clean_text_for_phrases(text):
     """Clean text for phrase extraction, preserving contractions."""
@@ -251,6 +293,14 @@ def normalize_word(word):
         return word[:-1]  # friends -> friend
     return word
 
+def _is_nan_like_token(w):
+    """Skip tokens that render as 'nan' (literal word, float NaN, or 'none')."""
+    if w is None or pd.isna(w):
+        return True
+    s = str(w).strip().lower()
+    return not s or s in ('nan', 'none')
+
+
 def is_duplicate_word(word, existing_words):
     """Check if word is a duplicate (including singular/plural variants)."""
     norm_word = normalize_word(word)
@@ -280,8 +330,6 @@ def get_topics_by_year(df, n_topics=5, n_top_words=8):
             # Use both unigrams and bigrams to capture compound topics like "machine learning"
             vectorizer = TfidfVectorizer(
                 max_features=2000,
-                min_df=5,
-                max_df=0.7,
                 stop_words='english',
                 ngram_range=(1, 2),  # Include bigrams for compound terms
             )
@@ -297,7 +345,9 @@ def get_topics_by_year(df, n_topics=5, n_top_words=8):
                 # Filter to meaningful words, deduplicating singular/plural
                 top_words = []
                 for i in top_word_indices:
-                    word = features[i]
+                    word = str(features[i]).strip()
+                    if _is_nan_like_token(word):
+                        continue
                     # Skip if single word and in boring words
                     if ' ' not in word and word in BORING_WORDS:
                         continue
@@ -365,7 +415,9 @@ def get_topics_by_contact(df, contacts=None, n_topics=3, n_top_words=5):
                 # Filter to meaningful words
                 top_words = []
                 for i in top_word_indices:
-                    word = features[i]
+                    word = str(features[i]).strip()
+                    if _is_nan_like_token(word):
+                        continue
                     if ' ' not in word and word in BORING_WORDS:
                         continue
                     if ' ' in word:
@@ -399,6 +451,7 @@ def add_sentiment_to_df(df):
     return df
 
 if __name__ == "__main__":
+    # Imports are already handled above with sys.path modification
     from extract import extract_messages
     from contacts import get_contacts_from_macos, create_contact_mappings
 
@@ -411,4 +464,4 @@ if __name__ == "__main__":
     print(get_top_emojis_by_year(df).head(20))
 
     print("\n=== SENTIMENT BY CONTACT ===")
-    print(get_sentiment_by_contact(df).head(10))
+    print(get_sentiment_by_contact(df).head(20))

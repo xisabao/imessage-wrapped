@@ -3,7 +3,7 @@ import pandas as pd
 from pathlib import Path
 import json
 
-from config import DATA_DIR, START_YEAR, END_YEAR, EXCLUDED_CONTACTS, MIN_TWO_WAY_RATIO, MIN_MESSAGES_FOR_SENTIMENT
+from config import DATA_DIR, START_YEAR, END_YEAR, EXCLUDED_CONTACTS, MIN_TWO_WAY_RATIO, MIN_MESSAGES_FOR_SENTIMENT, BORING_WORDS
 import re
 from extract import extract_messages
 from contacts import (
@@ -51,6 +51,13 @@ from visualize import (
     create_emoji_grid,
     create_question_ratio_line,
     create_monthly_top_contacts,
+    create_initiators_bar,
+    create_response_times_scatter,
+    create_streaks_bar,
+    create_emoji_by_contact_grid,
+    create_question_by_contact_bar,
+    create_unique_words_timeline,
+    create_topics_by_contact_display,
 )
 from report import generate_report, save_report
 
@@ -208,6 +215,29 @@ def main():
 
     # Step 7: Generate visualizations
     print("\n[7/8] Generating visualizations...")
+    
+    # Get top contact names for filtering
+    top_contact_names = top_contacts['contact_name'].head(20).tolist()
+    
+    # Filter data to only top contacts
+    initiators_filtered = initiators[initiators['contact_name'].isin(top_contact_names)]
+    response_times_filtered = response_times[response_times['contact_name'].isin(top_contact_names)]
+    emojis_by_contact_filtered = emojis_by_contact[emojis_by_contact['contact_name'].isin(top_contact_names)]
+    question_by_contact_filtered = question_by_contact[question_by_contact['contact_name'].isin(top_contact_names)]
+    
+    # Load sentiment scores for top contacts
+    sentiment_scores_path = DATA_DIR / "sentiment_scores.parquet"
+    sentiment_by_contact_filtered = None
+    if sentiment_scores_path.exists():
+        try:
+            sentiment_all = pd.read_parquet(sentiment_scores_path)
+            sentiment_by_contact_filtered = sentiment_all[sentiment_all['contact_name'].isin(top_contact_names)]
+        except Exception as e:
+            print(f"  Warning: Could not load sentiment scores: {e}")
+            sentiment_by_contact_filtered = sentiment_by_contact[sentiment_by_contact['contact_name'].isin(top_contact_names)]
+    else:
+        sentiment_by_contact_filtered = sentiment_by_contact[sentiment_by_contact['contact_name'].isin(top_contact_names)]
+    
     charts = {
         'stacked_area': create_stacked_area(monthly_volume),
         'lopsidedness': create_lopsidedness_scatter(lopsidedness.head(30)),
@@ -219,6 +249,14 @@ def main():
         'emoji_grid': create_emoji_grid(emojis_by_year),
         'question_ratio': create_question_ratio_line(question_ratio),
         'fastest_responses_2025': fastest_responses_2025,
+        'initiators': create_initiators_bar(initiators_filtered, top_n=15),
+        'response_times': create_response_times_scatter(response_times_filtered, top_n=20),
+        'streaks': create_streaks_bar(streaks, top_n=10),
+        'emoji_by_contact': create_emoji_by_contact_grid(emojis_by_contact_filtered, top_contacts=10),
+        'question_by_contact': create_question_by_contact_bar(question_by_contact_filtered, top_n=15),
+        'unique_words': create_unique_words_timeline(unique_words, words_per_year=5),
+        'topics_by_contact': create_topics_by_contact_display(topics_by_contact),
+        'sentiment_top_contacts': create_sentiment_bar(sentiment_by_contact_filtered, title="Sentiment: Your Top People", top_n=20),
     }
 
     # Build AI-generated insights about surprising relationship dynamics (2023-2025)
@@ -307,6 +345,22 @@ def main():
     work_msgs = df_recent[df_recent['is_work_hours']].groupby('contact_name').size()
     total = df_recent.groupby('contact_name').size()
     work_ratio = (work_msgs / total).dropna()
+    
+    # Weekend-heavy relationships
+    weekend_msgs = df_recent[df_recent['is_weekend']].groupby('contact_name').size()
+    weekend_ratio = (weekend_msgs / total).dropna()
+    weekend_heavy = weekend_ratio[weekend_ratio > 0.5]
+    if not weekend_heavy.empty and 2025 in yearly_counts.columns:
+        weekend_contacts = weekend_heavy[weekend_heavy.index.isin(yearly_counts[yearly_counts[2025] > 300].index)]
+        if not weekend_contacts.empty:
+            top_weekend = weekend_contacts.sort_values(ascending=False).head(1)
+            name = top_weekend.index[0]
+            pct = weekend_ratio[name] * 100
+            msgs_2025 = int(yearly_counts.loc[name, 2025])
+            insights['ai_insights'].append((
+                f"Weekend Friend: {name}",
+                f"{pct:.0f}% of your {msgs_2025:,} messages are on weekends. This is your personal time relationship, separate from work life."
+            ))
 
     # Find people who are almost exclusively work hours AND became big in 2025
     if 2025 in yearly_counts.columns:
@@ -358,6 +412,19 @@ def main():
             f"They're Waiting: {name}",
             f"They respond in {their_time:.0f} min, but you take {your_time:.0f} min. They're {your_time/their_time:.1f}x faster than you."
         ))
+    
+    # Balanced response times
+    balanced_responses = combined[(combined['ratio'] >= 0.5) & (combined['ratio'] <= 2.0)]
+    if not balanced_responses.empty and len(balanced_responses) >= 2:
+        fastest_balanced = balanced_responses.nsmallest(1, 'you')
+        if not fastest_balanced.empty:
+            name = fastest_balanced.index[0]
+            your_time = fastest_balanced.loc[name, 'you']
+            their_time = fastest_balanced.loc[name, 'them']
+            insights['ai_insights'].append((
+                f"Perfectly Synced: {name}",
+                f"You both respond in similar timeframes (you: {your_time:.0f} min, them: {their_time:.0f} min). This relationship has matching energy levels."
+            ))
 
     # 7. Your texting volume is exploding
     yearly_totals = df.groupby('year').size()
@@ -453,8 +520,8 @@ def main():
     valid_contacts = contact_msg_counts[contact_msg_counts >= 100].index
     sent_msgs = sent_msgs[sent_msgs['contact_name'].isin(valid_contacts)]
 
-    # Question rate per contact
-    sent_msgs['has_question'] = sent_msgs['text'].fillna('').str.contains(r'\?')
+    # Question rate per contact (ASCII ? and fullwidth ？ U+FF1F)
+    sent_msgs['has_question'] = sent_msgs['text'].fillna('').astype(str).str.contains(r'\?|？', regex=True)
     question_rate = sent_msgs.groupby('contact_name')['has_question'].mean()
 
     # Message length
@@ -568,6 +635,19 @@ def main():
             f"Rapid Fire: {name}",
             f"Average message length: {length:.0f} characters across {count:,} messages. This is staccato conversation - quick exchanges, not essays."
         ))
+    
+    # Long message relationships
+    longest_msgs = avg_length.nlargest(5)
+    longest_with_volume = longest_msgs[longest_msgs.index.isin(top_500)]
+    if not longest_with_volume.empty:
+        name = longest_with_volume.index[0]
+        length = longest_with_volume.iloc[0]
+        count = int(contact_msg_counts[name])
+        if length > 100:  # Only if significantly longer
+            insights['ai_insights'].append((
+                f"Deep Conversations: {name}",
+                f"Average message length: {length:.0f} characters across {count:,} messages. You write longer, more thoughtful messages here - this is where you go deep."
+            ))
 
     # Insight: Late night confidant
     late_night_sent = df_recent[(df_recent['hour'] >= 0) & (df_recent['hour'] < 4) & (df_recent['is_from_me'] == 1)]
@@ -583,6 +663,373 @@ def main():
         insights['ai_insights'].append((
             f"3am Thoughts: {name}",
             f"{pct:.0f}% of your messages to them are between midnight-4am ({count} messages). When you can't sleep, this is who you reach for."
+        ))
+
+    # 10. Initiator patterns
+    print("  - Analyzing conversation initiation patterns...")
+    if not initiators.empty:
+        # You always initiate
+        you_initiate_heavy = initiators[initiators['you_initiate_pct'] > 75].head(3)
+        if not you_initiate_heavy.empty:
+            names = ', '.join(you_initiate_heavy['contact_name'].tolist())
+            insights['ai_insights'].append((
+                "You Always Reach Out First",
+                f"With {names}, you initiate 75%+ of conversations. These are relationships where you're the one keeping the connection alive."
+            ))
+        
+        # They always initiate
+        they_initiate_heavy = initiators[initiators['you_initiate_pct'] < 25].head(3)
+        if not they_initiate_heavy.empty:
+            names = ', '.join(they_initiate_heavy['contact_name'].tolist())
+            insights['ai_insights'].append((
+                "They Always Reach Out First",
+                f"With {names}, they initiate 75%+ of conversations. These people are the ones keeping you in their lives."
+            ))
+        
+        # Balanced initiators
+        balanced = initiators[(initiators['you_initiate_pct'] >= 40) & (initiators['you_initiate_pct'] <= 60)].head(3)
+        if not balanced.empty and len(balanced) >= 2:
+            names = ', '.join(balanced['contact_name'].head(3).tolist())
+            insights['ai_insights'].append((
+                "Mutual Initiators",
+                f"With {names}, initiation is balanced (40-60% each way). These feel like true two-way friendships where both people put in effort."
+            ))
+
+    # 11. Streak patterns
+    print("  - Analyzing streak patterns...")
+    if not streaks.empty:
+        longest_streak = streaks.iloc[0]
+        insights['ai_insights'].append((
+            f"Your Longest Streak: {longest_streak['contact_name']}",
+            f"{int(longest_streak['streak_length'])} consecutive days from {longest_streak['start_date']} to {longest_streak['end_date']}. You texted every single day - that's commitment."
+        ))
+        
+        # Multiple long streaks with same person
+        if len(streaks) > 1:
+            top_contact = streaks['contact_name'].iloc[0]
+            streaks_with_top = streaks[streaks['contact_name'] == top_contact]
+            if len(streaks_with_top) > 1:
+                total_streak_days = streaks_with_top['streak_length'].sum()
+                insights['ai_insights'].append((
+                    f"Streak Master: {top_contact}",
+                    f"You have multiple long streaks totaling {int(total_streak_days)} days. This person is your most consistent daily contact."
+                ))
+
+    # 12. Emoji patterns
+    print("  - Analyzing emoji usage patterns...")
+    if not emojis_by_contact.empty:
+        # Most emoji-heavy contacts
+        emoji_counts = emojis_by_contact.groupby('contact_name').size()
+        emoji_heavy = emoji_counts.nlargest(3)
+        if not emoji_heavy.empty:
+            names = ', '.join(emoji_heavy.index.tolist())
+            insights['ai_insights'].append((
+                "Your Emoji People",
+                f"You use the most diverse emojis with: {names}. These conversations are colorful and expressive."
+            ))
+        
+        # Emoji evolution by year
+        if not emojis_by_year.empty:
+            recent_emojis = emojis_by_year[emojis_by_year['year'] >= 2023]
+            if not recent_emojis.empty:
+                top_recent = recent_emojis.groupby('emojis')['count'].sum().nlargest(1)
+                if not top_recent.empty:
+                    top_emoji = top_recent.index[0]
+                    count = int(top_recent.iloc[0])
+                    insights['ai_insights'].append((
+                        "Your Signature Emoji",
+                        f"Since 2023, you've used '{top_emoji}' {count:,} times. This emoji has become your go-to expression."
+                    ))
+
+    # 13. Question patterns
+    print("  - Analyzing question patterns...")
+    if not question_by_contact.empty:
+        # Most questions
+        most_questions = question_by_contact.nlargest(3, 'question_pct')
+        if not most_questions.empty:
+            names = ', '.join([f"{name} ({row['question_pct']:.0f}%)" 
+                              for name, row in most_questions.iterrows()])
+            insights['ai_insights'].append((
+                "Your Question People",
+                f"You ask questions most with: {names}. These are relationships where you're curious, seeking information, or checking in."
+            ))
+        
+        # Fewest questions
+        fewest_questions = question_by_contact.nsmallest(3, 'question_pct')
+        if not fewest_questions.empty and fewest_questions.iloc[0]['question_pct'] < 5:
+            names = ', '.join([f"{name} ({row['question_pct']:.0f}%)" 
+                              for name, row in fewest_questions.iterrows()])
+            insights['ai_insights'].append((
+                "No Questions Needed",
+                f"With {names}, you rarely ask questions. You're declarative, sharing information rather than seeking it."
+            ))
+
+    # 14. Sentiment patterns
+    print("  - Analyzing sentiment patterns...")
+    if not sentiment_by_contact.empty:
+        # Best vibes
+        best_vibes = sentiment_by_contact.head(3)
+        if not best_vibes.empty and best_vibes.iloc[0]['avg_sentiment'] > 0.1:
+            names = ', '.join(best_vibes['contact_name'].tolist())
+            avg_sent = best_vibes.iloc[0]['avg_sentiment']
+            insights['ai_insights'].append((
+                "Your Positive Energy People",
+                f"Conversations with {names} have the highest positive sentiment (avg {avg_sent:.2f}). These people bring out your best vibes."
+            ))
+        
+        # Worst vibes (but not too negative, just less positive)
+        worst_vibes = sentiment_by_contact.tail(3)
+        if not worst_vibes.empty and worst_vibes.iloc[-1]['avg_sentiment'] < 0:
+            names = ', '.join(worst_vibes['contact_name'].tolist())
+            avg_sent = worst_vibes.iloc[-1]['avg_sentiment']
+            insights['ai_insights'].append((
+                "More Serious Conversations",
+                f"With {names}, your conversations have lower sentiment (avg {avg_sent:.2f}). These might be where you discuss problems, stress, or difficult topics."
+            ))
+
+    # 15. Unique words evolution
+    print("  - Analyzing vocabulary evolution...")
+    if not unique_words.empty:
+        # Words that appeared in recent years
+        recent_words = unique_words[unique_words['year'] >= 2023]
+        if not recent_words.empty:
+            top_recent_word = recent_words.nlargest(1, 'tfidf_score')
+            if not top_recent_word.empty:
+                word = top_recent_word.iloc[0]['word']
+                year = int(top_recent_word.iloc[0]['year'])
+                insights['ai_insights'].append((
+                    "Your New Vocabulary",
+                    f"The word '{word}' spiked in {year} - it became uniquely important to how you communicate that year."
+                ))
+        
+        # Words that disappeared
+        old_words = unique_words[unique_words['year'] <= 2019]
+        recent_years = unique_words[unique_words['year'] >= 2023]
+        if not old_words.empty and not recent_years.empty:
+            old_word_list = set(old_words['word'].unique())
+            recent_word_list = set(recent_years['word'].unique())
+            disappeared = old_word_list - recent_word_list
+            if len(disappeared) > 0:
+                top_disappeared = old_words[old_words['word'].isin(list(disappeared))].nlargest(1, 'tfidf_score')
+                if not top_disappeared.empty:
+                    word = top_disappeared.iloc[0]['word']
+                    insights['ai_insights'].append((
+                        "Words You Left Behind",
+                        f"'{word}' was important in your early years but disappeared from your vocabulary. Your language evolved."
+                    ))
+
+    # 16. Topics by contact patterns
+    print("  - Analyzing topic patterns...")
+    if not topics_by_contact.empty:
+        # Most topic-diverse contacts
+        topic_counts = topics_by_contact.groupby('contact_name').size()
+        diverse_topics = topic_counts.nlargest(3)
+        if not diverse_topics.empty:
+            names = ', '.join(diverse_topics.index.tolist())
+            insights['ai_insights'].append((
+                "Your Multi-Topic People",
+                f"With {names}, you discuss the widest range of topics. These are your most versatile conversation partners."
+            ))
+        
+        # Unique topics per contact
+        all_topics = topics_by_contact.groupby('top_words').size()
+        unique_topics = all_topics[all_topics == 1]  # Topics only discussed with one person
+        if not unique_topics.empty:
+            unique_contacts = topics_by_contact[topics_by_contact['top_words'].isin(unique_topics.index)]
+            if not unique_contacts.empty:
+                contact_with_unique = unique_contacts['contact_name'].iloc[0]
+                topic = unique_contacts['top_words'].iloc[0]
+                insights['ai_insights'].append((
+                    f"Unique Topics: {contact_with_unique}",
+                    f"You discuss '{topic}' almost exclusively with {contact_with_unique}. This topic defines your relationship with them."
+                ))
+
+    # 17. Grammar patterns (formal vs casual)
+    print("  - Analyzing grammar patterns...")
+    # This uses the formal_contacts and casual_contacts from section 7.5
+    # We'll add this after section 7.5 is calculated
+
+    # 18. Agreement vs Debate patterns
+    print("  - Analyzing agreement patterns...")
+    # This uses agreers and debaters from section 7.5
+    # We'll add this after section 7.5 is calculated
+
+    # 19. Social churn insights
+    print("  - Analyzing social churn patterns...")
+    # This uses fadeouts and new_friends from section 7.5
+    # We'll add this after section 7.5 is calculated
+
+    # Step 7.5: Calculate data for missing sections 4-7
+    print("\n[7.5/8] Calculating additional sections...")
+    
+    # Section 4: Word Cloud Comparison
+    print("  - Word cloud comparison...")
+    wordcloud_old = None
+    wordcloud_new = None
+    if START_YEAR in df['year'].values and (END_YEAR - 1) in df['year'].values:
+        from collections import Counter
+        from analysis.content import clean_text_for_phrases
+        
+        sent_old = df[(df['year'] == START_YEAR) & (df['is_from_me'] == 1)].copy()
+        sent_new = df[(df['year'] == END_YEAR - 1) & (df['is_from_me'] == 1)].copy()
+        
+        if len(sent_old) > 0:
+            old_text = ' '.join(sent_old['text'].fillna('').astype(str).tolist())
+            old_clean = clean_text_for_phrases(old_text)
+            old_words = [w for w in old_clean.split() if w not in BORING_WORDS and len(w) > 2]
+            wordcloud_old = list(Counter(old_words).most_common(20))
+        
+        if len(sent_new) > 0:
+            new_text = ' '.join(sent_new['text'].fillna('').astype(str).tolist())
+            new_clean = clean_text_for_phrases(new_text)
+            new_words = [w for w in new_clean.split() if w not in BORING_WORDS and len(w) > 2]
+            wordcloud_new = list(Counter(new_words).most_common(20))
+    
+    # Section 5: Grammar (Formal vs Casual)
+    print("  - Grammar analysis...")
+    formal_contacts = None
+    casual_contacts = None
+    
+    sent_msgs_grammar = df[df['is_from_me'] == 1].copy()
+    contact_msg_counts_grammar = sent_msgs_grammar.groupby('contact_name').size()
+    valid_contacts_grammar = contact_msg_counts_grammar[contact_msg_counts_grammar >= 50].index
+    sent_msgs_grammar = sent_msgs_grammar[sent_msgs_grammar['contact_name'].isin(valid_contacts_grammar)]
+    
+    if len(sent_msgs_grammar) > 0:
+        # Formal score: proper punctuation, capitalization, longer sentences
+        sent_msgs_grammar['has_period'] = sent_msgs_grammar['text'].fillna('').str.contains(r'\.', regex=True)
+        sent_msgs_grammar['has_capital'] = sent_msgs_grammar['text'].fillna('').str.contains(r'[A-Z]')
+        sent_msgs_grammar['word_count'] = sent_msgs_grammar['text'].fillna('').str.split().str.len()
+        sent_msgs_grammar['is_all_lower'] = sent_msgs_grammar['text'].fillna('').str.islower()
+        
+        formal_scores = sent_msgs_grammar.groupby('contact_name').agg(
+            punctuation_rate=('has_period', 'mean'),
+            capital_rate=('has_capital', 'mean'),
+            avg_length=('word_count', 'mean'),
+        )
+        formal_scores['formal_score'] = (
+            formal_scores['punctuation_rate'] * 0.4 +
+            formal_scores['capital_rate'] * 0.3 +
+            (formal_scores['avg_length'] / 20).clip(0, 1) * 0.3
+        )
+        formal_contacts = [(name, score) for name, score in 
+                          formal_scores.nlargest(10, 'formal_score')['formal_score'].items()]
+        
+        # Casual: all lowercase percentage
+        lowercase_pct = sent_msgs_grammar.groupby('contact_name')['is_all_lower'].mean()
+        casual_contacts = list(lowercase_pct.nlargest(10).items())
+    
+    # Section 6: Agreement vs Debate
+    print("  - Agreement vs debate analysis...")
+    agreers = None
+    debaters = None
+    
+    sent_msgs_debate = df[df['is_from_me'] == 1].copy()
+    contact_msg_counts_debate = sent_msgs_debate.groupby('contact_name').size()
+    valid_contacts_debate = contact_msg_counts_debate[contact_msg_counts_debate >= 50].index
+    sent_msgs_debate = sent_msgs_debate[sent_msgs_debate['contact_name'].isin(valid_contacts_debate)]
+    
+    if len(sent_msgs_debate) > 0:
+        # Agreement patterns
+        agreement_patterns = [
+            r'\btotally\b', r'\bexactly\b', r'\bso true\b', r'\b100%\b', r'\babsolutely\b',
+            r'\bcompletely\b', r'\bdefinitely\b', r'\bfor sure\b', r'\byeah\b', r'\byep\b'
+        ]
+        sent_msgs_debate['has_agreement'] = sent_msgs_debate['text'].fillna('').str.lower().str.contains(
+            '|'.join(agreement_patterns), regex=True, na=False
+        )
+        agreement_rates = sent_msgs_debate.groupby('contact_name')['has_agreement'].mean() * 100
+        agreers = list(agreement_rates.nlargest(10).items())
+        
+        # Debate patterns
+        debate_patterns = [
+            r'\bactually\b', r'\bbut\b', r'\bi disagree\b', r'\bnot sure\b', r'\bhowever\b',
+            r'\bthough\b', r'\balthough\b', r'\bdisagree\b', r'\bdont think\b', r'\bnot really\b'
+        ]
+        sent_msgs_debate['has_debate'] = sent_msgs_debate['text'].fillna('').str.lower().str.contains(
+            '|'.join(debate_patterns), regex=True, na=False
+        )
+        debate_rates = sent_msgs_debate.groupby('contact_name')['has_debate'].mean() * 100
+        debaters = list(debate_rates.nlargest(10).items())
+    
+    # Section 7: Social Churn (Fadeouts and New Friends)
+    print("  - Social churn analysis...")
+    fadeouts = None
+    new_friends = None
+    
+    # Compare START_YEAR vs END_YEAR-1
+    if START_YEAR in df['year'].values and (END_YEAR - 1) in df['year'].values:
+        yearly_counts_churn = df.groupby(['year', 'contact_name']).size().unstack(fill_value=0)
+        
+        if START_YEAR in yearly_counts_churn.columns and (END_YEAR - 1) in yearly_counts_churn.columns:
+            old_year = START_YEAR
+            new_year = END_YEAR - 1
+            
+            # Fadeouts: were active in old year, much less in new year
+            fadeout_data = []
+            for contact in yearly_counts_churn.index:
+                old_count = yearly_counts_churn.loc[contact, old_year]
+                new_count = yearly_counts_churn.loc[contact, new_year]
+                if old_count >= 100 and new_count < old_count * 0.3:  # Dropped by 70%+
+                    fadeout_data.append((contact, int(old_count), int(new_count)))
+            fadeouts = sorted(fadeout_data, key=lambda x: x[1] - x[2], reverse=True)[:10]
+            
+            # New friends: barely existed in old year, significant in new year
+            new_friend_data = []
+            for contact in yearly_counts_churn.index:
+                old_count = yearly_counts_churn.loc[contact, old_year]
+                new_count = yearly_counts_churn.loc[contact, new_year]
+                if old_count < 50 and new_count >= 200:  # Barely existed, now significant
+                    new_friend_data.append((contact, int(old_count), int(new_count)))
+            new_friends = sorted(new_friend_data, key=lambda x: x[2], reverse=True)[:10]
+
+    # Add insights for patterns calculated in section 7.5
+    # 17. Grammar patterns
+    if formal_contacts and len(formal_contacts) > 0:
+        most_formal = formal_contacts[0]
+        insights['ai_insights'].append((
+            f"Most Formal: {most_formal[0]}",
+            f"You use proper punctuation, capitalization, and longer sentences most with {most_formal[0]} (score: {most_formal[1]:.2f}). They get your best English."
+        ))
+    
+    if casual_contacts and len(casual_contacts) > 0:
+        most_casual = casual_contacts[0]
+        insights['ai_insights'].append((
+            f"Most Casual: {most_casual[0]}",
+            f"You're most relaxed with {most_casual[0]} - {most_casual[1]:.0f}% of messages are all lowercase. Zero pretense, pure comfort."
+        ))
+
+    # 18. Agreement vs Debate patterns
+    if agreers and len(agreers) > 0:
+        top_agreer = agreers[0]
+        insights['ai_insights'].append((
+            f"You Agree Most: {top_agreer[0]}",
+            f"You use agreement phrases ('totally', 'exactly', 'so true') {top_agreer[1]:.1f}% of the time with {top_agreer[0]}. This person gets your enthusiastic agreement."
+        ))
+    
+    if debaters and len(debaters) > 0:
+        top_debater = debaters[0]
+        insights['ai_insights'].append((
+            f"You Debate Most: {top_debater[0]}",
+            f"You use debate phrases ('actually', 'but', 'I disagree') {top_debater[1]:.1f}% of the time with {top_debater[0]}. This is your intellectual sparring partner."
+        ))
+
+    # 19. Social churn insights
+    if fadeouts and len(fadeouts) > 0:
+        biggest_fadeout = fadeouts[0]
+        if biggest_fadeout[1] > 0:
+            drop_pct = int((1 - biggest_fadeout[2] / biggest_fadeout[1]) * 100)
+            insights['ai_insights'].append((
+                f"Biggest Fadeout: {biggest_fadeout[0]}",
+                f"Went from {biggest_fadeout[1]:,} messages in {START_YEAR} to {biggest_fadeout[2]:,} in {END_YEAR - 1} ({drop_pct}% drop). This relationship has significantly quieted."
+            ))
+    
+    if new_friends and len(new_friends) > 0:
+        biggest_new_friend = new_friends[0]
+        growth = biggest_new_friend[2] - biggest_new_friend[1]
+        insights['ai_insights'].append((
+            f"New Major Friend: {biggest_new_friend[0]}",
+            f"Exploded from {biggest_new_friend[1]:,} messages in {START_YEAR} to {biggest_new_friend[2]:,} in {END_YEAR - 1} (+{growth:,}). This person became central to your life."
         ))
 
     # Step 8: Generate report
@@ -608,6 +1055,14 @@ def main():
         df_2025=df_2025,
         top_by_year=top_by_year,
         monthly_top_2025=monthly_top_1,
+        wordcloud_old=wordcloud_old,
+        wordcloud_new=wordcloud_new,
+        formal_contacts=formal_contacts,
+        casual_contacts=casual_contacts,
+        agreers=agreers,
+        debaters=debaters,
+        fadeouts=fadeouts,
+        new_friends=new_friends,
     )
 
     output_path = save_report(html)

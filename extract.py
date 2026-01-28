@@ -106,6 +106,23 @@ def extract_messages():
 
     print(f"Raw messages fetched: {len(df):,}")
 
+    # Coerce is_from_me to 0/1 (Apple: 0=from them, 1=from me; some DBs use other encodings)
+    def _coerce_from_me(x):
+        if pd.isna(x):
+            return 0
+        try:
+            v = int(x) if isinstance(x, (int, float, bool)) else int(float(str(x).strip() or 0))
+        except (ValueError, TypeError):
+            return 0
+        return 1 if v else 0
+
+    df['is_from_me'] = df['is_from_me'].apply(_coerce_from_me).astype(int)
+    n_from_me = df['is_from_me'].sum()
+    n_from_them = len(df) - n_from_me
+    print(f"  Messages from you: {n_from_me:,} | from them: {n_from_them:,}")
+    if n_from_me == 0 or n_from_them == 0:
+        print("  Warning: All messages appear from one side. If that's wrong, check chat.db is_from_me.")
+
     # Extract text from attributedBody where text is NULL
     def get_message_text(row):
         if row['text'] and str(row['text']).strip():

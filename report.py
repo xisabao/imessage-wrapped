@@ -772,7 +772,7 @@ def create_insight_cards_html(insights):
         return ""
 
     cards = []
-    for i, (title, content) in enumerate(insights['ai_insights'][:10], 1):
+    for i, (title, content) in enumerate(insights['ai_insights'][:20], 1):
         cards.append(f"""
         <div class="insight-card">
             <div class="insight-title">{i}. {title}</div>
@@ -1118,10 +1118,96 @@ def generate_report(total_messages, total_sent, total_received, total_contacts,
         """
         sections.append(section7)
 
-    # Section 8: AI Insights
+    # Section 8: Additional Visualizations
+    # Initiators
+    initiators_chart = ""
+    if 'initiators' in charts and charts['initiators'] is not None:
+        initiators_chart = embed_plotly_chart(charts['initiators'], 'initiators-chart', height=450)
+    
+    # Response Times
+    response_times_chart = ""
+    if 'response_times' in charts and charts['response_times'] is not None:
+        response_times_chart = embed_plotly_chart(charts['response_times'], 'response-times-chart', height=500)
+    
+    # Streaks
+    streaks_chart = ""
+    if 'streaks' in charts and charts['streaks'] is not None:
+        streaks_chart = embed_plotly_chart(charts['streaks'], 'streaks-chart', height=400)
+    
+    # Emojis by Contact
+    emoji_contact_chart = ""
+    if 'emoji_by_contact' in charts and charts['emoji_by_contact'] is not None:
+        emoji_contact_chart = embed_plotly_chart(charts['emoji_by_contact'], 'emoji-contact-chart', height=600)
+    
+    # Question Rate by Contact
+    question_contact_chart = ""
+    if 'question_by_contact' in charts and charts['question_by_contact'] is not None:
+        question_contact_chart = embed_plotly_chart(charts['question_by_contact'], 'question-contact-chart', height=450)
+    
+    # Unique Words Timeline
+    unique_words_chart = ""
+    if 'unique_words' in charts and charts['unique_words'] is not None:
+        unique_words_chart = embed_plotly_chart(charts['unique_words'], 'unique-words-chart', height=300)
+    
+    # Topics by Contact
+    topics_contact_chart = ""
+    if 'topics_by_contact' in charts and charts['topics_by_contact'] is not None:
+        topics_contact_chart = embed_plotly_chart(charts['topics_by_contact'], 'topics-contact-chart', height=600)
+    
+    # Add sections for new visualizations
+    if initiators_chart or response_times_chart or streaks_chart:
+        section8a = f"""
+        <section>
+            <div class="section-header">
+                <div class="section-icon blue"><i class="fas fa-comments"></i></div>
+                <h2>Conversation Patterns</h2>
+            </div>
+            <p class="section-subtitle">Who initiates, response times, and texting streaks.</p>
+            {initiators_chart}
+            {response_times_chart}
+            {streaks_chart}
+        </section>
+        """
+        sections.append(section8a)
+    
+    # Sentiment for Top Contacts
+    sentiment_top_chart = ""
+    if 'sentiment_top_contacts' in charts and charts['sentiment_top_contacts'] is not None:
+        sentiment_top_chart = embed_plotly_chart(charts['sentiment_top_contacts'], 'sentiment-top-chart', height=600)
+    
+    if emoji_contact_chart or question_contact_chart or sentiment_top_chart:
+        section8b = f"""
+        <section>
+            <div class="section-header">
+                <div class="section-icon pink"><i class="fas fa-smile"></i></div>
+                <h2>Communication Style by Contact</h2>
+            </div>
+            <p class="section-subtitle">Emojis, question patterns, and sentiment reveal how you communicate with your top people.</p>
+            {sentiment_top_chart}
+            {emoji_contact_chart}
+            {question_contact_chart}
+        </section>
+        """
+        sections.append(section8b)
+    
+    if unique_words_chart or topics_contact_chart:
+        section8c = f"""
+        <section>
+            <div class="section-header">
+                <div class="section-icon teal"><i class="fas fa-book"></i></div>
+                <h2>Vocabulary & Topics</h2>
+            </div>
+            <p class="section-subtitle">Words that defined each year and topics you discuss with different people.</p>
+            {unique_words_chart}
+            {topics_contact_chart}
+        </section>
+        """
+        sections.append(section8c)
+    
+    # Section 9: AI Insights
     insights_html = create_insight_cards_html(insights)
     if insights_html:
-        section8 = f"""
+        section9 = f"""
         <section>
             <div class="section-header">
                 <div class="section-icon teal"><i class="fas fa-lightbulb"></i></div>
@@ -1130,7 +1216,7 @@ def generate_report(total_messages, total_sent, total_received, total_contacts,
             {insights_html}
         </section>
         """
-        sections.append(section8)
+        sections.append(section9)
 
     # Generate final HTML
     html = HTML_TEMPLATE.format(
