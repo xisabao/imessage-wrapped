@@ -174,7 +174,7 @@ def extract_messages():
     JOIN chat c ON cmj.chat_id = c.ROWID
     LEFT JOIN handle h ON m.handle_id = h.ROWID
     WHERE
-        c.chat_identifier NOT LIKE 'chat%'
+        c.style != 43
         AND (m.text IS NOT NULL OR m.attributedBody IS NOT NULL OR m.cache_has_attachments = 1)
     ORDER BY m.date
     """
@@ -220,7 +220,7 @@ def extract_group_messages():
     JOIN chat c ON cmj.chat_id = c.ROWID
     LEFT JOIN handle h ON m.handle_id = h.ROWID
     WHERE
-        c.chat_identifier LIKE 'chat%'
+        c.style = 43
         AND (m.text IS NOT NULL OR m.attributedBody IS NOT NULL OR m.cache_has_attachments = 1)
     ORDER BY m.date
     """
@@ -254,7 +254,7 @@ def extract_group_members():
     FROM chat c
     JOIN chat_handle_join chj ON c.ROWID = chj.chat_id
     JOIN handle h ON chj.handle_id = h.ROWID
-    WHERE c.chat_identifier LIKE 'chat%'
+    WHERE c.style = 43
     """
 
     with connect_db() as conn:
