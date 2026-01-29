@@ -64,6 +64,8 @@ def main():
     print("\n[1/7] Extracting group messages...")
     df = extract_group_messages()
 
+    print(f"  Total group chats found: {df['chat_id'].nunique()}")
+
     if df.empty:
         print("No group messages found. Exiting.")
         return None
@@ -88,12 +90,13 @@ def main():
 
     mappings = create_contact_mappings(df, contacts_map)
     # Resolve sender names for group messages
-    df['contact_name'] = df['contact_id'].astype(str).map(mappings)
+    # Use contact_id as fallback so unresolved handles stay unique (not NaN)
+    df['contact_name'] = df['contact_id'].astype(str).map(mappings).fillna(df['contact_id'].astype(str))
     # is_from_me messages have no handle_id, mark as "You"
     df.loc[df['is_from_me'] == 1, 'contact_name'] = 'You'
 
     # Resolve member names in membership table
-    members_df['contact_name'] = members_df['handle_id'].astype(str).map(mappings)
+    members_df['contact_name'] = members_df['handle_id'].astype(str).map(mappings).fillna(members_df['handle_id'].astype(str))
 
     # Step 4: Generate names for unnamed groups
     print("\n[4/7] Generating group names...")
@@ -119,12 +122,14 @@ def main():
     n_named = df['chat_id'].nunique() - n_unnamed
     print(f"  {n_named} groups with names, {n_unnamed} auto-named from members")
 
-    # Filter out groups with too few members
-    member_counts = members_df.groupby('chat_id')['handle_id'].nunique()
-    valid_groups = member_counts[member_counts >= MIN_GROUP_MEMBERS].index
+    # Filter out groups with too few participants
+    # Use actual message senders rather than chat_handle_join (which can be incomplete
+    # if members left the group or for older chats)
+    sender_counts = df.groupby('chat_id')['contact_name'].nunique()
+    valid_groups = sender_counts[sender_counts >= MIN_GROUP_MEMBERS].index
     before = len(df)
     df = df[df['chat_id'].isin(valid_groups)]
-    print(f"  Filtered to groups with {MIN_GROUP_MEMBERS}+ members: {before - len(df):,} messages removed")
+    print(f"  Filtered to groups with {MIN_GROUP_MEMBERS}+ participants: {before - len(df):,} messages removed")
     print(f"  Remaining: {len(df):,} messages in {df['chat_id'].nunique()} groups")
 
     if df.empty:
