@@ -34,12 +34,12 @@ from visualize_groups import (
 from report_groups import generate_group_report, save_group_report
 
 
-def generate_group_name(chat_id, members_df, contacts_map):
+def generate_group_name(chat_id, members_df, contact_mappings):
     """Generate a display name for an unnamed group from its members."""
     members = members_df[members_df['chat_id'] == chat_id]['handle_id'].tolist()
     names = []
     for handle in members:
-        name = resolve_contact_id(str(handle), contacts_map)
+        name = contact_mappings.get(str(handle), 'Unknown')
         # Skip unresolved (phone numbers)
         if name != str(handle) and name != 'Unknown':
             names.append(name.split()[0])  # First name only
@@ -86,17 +86,14 @@ def main():
             if k not in contacts_map:
                 contacts_map[k] = v
 
+    mappings = create_contact_mappings(df, contacts_map)
     # Resolve sender names for group messages
-    df['contact_name'] = df['contact_id'].astype(str).map(
-        lambda x: resolve_contact_id(x, contacts_map)
-    )
+    df['contact_name'] = df['contact_id'].astype(str).map(mappings)
     # is_from_me messages have no handle_id, mark as "You"
     df.loc[df['is_from_me'] == 1, 'contact_name'] = 'You'
 
     # Resolve member names in membership table
-    members_df['contact_name'] = members_df['handle_id'].astype(str).map(
-        lambda x: resolve_contact_id(x, contacts_map)
-    )
+    members_df['contact_name'] = members_df['handle_id'].astype(str).map(mappings)
 
     # Step 4: Generate names for unnamed groups
     print("\n[4/7] Generating group names...")
