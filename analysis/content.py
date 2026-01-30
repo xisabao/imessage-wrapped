@@ -116,18 +116,14 @@ def calculate_sentiment(text):
     except Exception:
         return {'compound': 0, 'pos': 0, 'neu': 0, 'neg': 0}
 
-def  get_sentiment_by_contact(df, min_messages=50, neutral_threshold=0.0001):
+def  get_sentiment_by_contact(df, min_messages=50):
     """Get average sentiment scores per contact.
     
     Analyzes sentiment for the entire conversation (both parties).
-    Filters out very neutral messages (|compound| < neutral_threshold) before averaging
-    to get clearer sentiment differences between contacts.
     
     Args:
         df: DataFrame with messages
         min_messages: Minimum total messages required per contact
-        neutral_threshold: Absolute compound score threshold below which messages
-                          are considered neutral and excluded (default: 0.0001)
     """
     df = df.copy()
 
@@ -136,10 +132,7 @@ def  get_sentiment_by_contact(df, min_messages=50, neutral_threshold=0.0001):
     df['sentiment_pos'] = sentiments.apply(lambda x: x['pos'])
     df['sentiment_neg'] = sentiments.apply(lambda x: x['neg'])
 
-    # Filter out very neutral messages (those with compound score close to 0)
-    df_non_neutral = df[df['sentiment_compound'].abs() >= neutral_threshold].copy()
-
-    by_contact = df_non_neutral.groupby('contact_name').agg(
+    by_contact = df.groupby('contact_name').agg(
         total_messages=('message_id', 'count'),
         avg_sentiment=('sentiment_compound', 'mean'),
         avg_positive=('sentiment_pos', 'mean'),

@@ -40,7 +40,7 @@ Your terminal needs permission to read `~/Library/Messages/chat.db`:
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/imessage-wrapped.git
+git clone https://github.com/xisabao/imessage-wrapped.git
 cd imessage-wrapped
 
 # Create virtual environment
@@ -72,8 +72,13 @@ EXCLUDED_CONTACTS = {
 
 ### 4. Run
 
+For 1:1 chats:
 ```bash
 python main.py
+```
+For group chats:
+```bash
+python main_groups.py
 ```
 
 The script will:
@@ -86,10 +91,14 @@ Open the report:
 ```bash
 open output/wrapped.html
 ```
+```bash
+open output/wrapped_groups.html
+```
 
 ## Output
 
-- `output/wrapped.html` - The main visual report
+- `output/wrapped.html` - The main visual report for 1:1 chats
+- `output/wrapped_groups.html` - The main visual report for group chats
 - `output/data/` - JSON and parquet files for further analysis
 
 ## Customization
