@@ -40,7 +40,7 @@ Your terminal needs permission to read `~/Library/Messages/chat.db`:
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/imessage-wrapped.git
+git clone https://github.com/xisabao/imessage-wrapped.git
 cd imessage-wrapped
 
 # Create virtual environment
